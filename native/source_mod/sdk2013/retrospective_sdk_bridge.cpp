@@ -1,7 +1,50 @@
 #include "retrospective_sdk_bridge.h"
 
-#include <dlfcn.h>
 #include <string.h>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
+namespace {
+#if defined(_WIN32)
+void* OpenModule(const char* path) {
+    return reinterpret_cast<void*>(LoadLibraryA(path));
+}
+
+void CloseModule(void* module) {
+    FreeLibrary(reinterpret_cast<HMODULE>(module));
+}
+
+void* LookupSymbol(void* module, const char* name) {
+    return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(module), name));
+}
+
+const char* LastLoaderError() {
+    return "loader_error";
+}
+#else
+void* OpenModule(const char* path) {
+    return dlopen(path, RTLD_NOW | RTLD_LOCAL);
+}
+
+void CloseModule(void* module) {
+    dlclose(module);
+}
+
+void* LookupSymbol(void* module, const char* name) {
+    dlerror();
+    return dlsym(module, name);
+}
+
+const char* LastLoaderError() {
+    const char* err = dlerror();
+    return err != NULL ? err : "loader_error";
+}
+#endif
+} // namespace
 
 RetrospectiveSdkBridge::RetrospectiveSdkBridge()
     : module_(NULL),
@@ -36,9 +79,9 @@ bool RetrospectiveSdkBridge::Startup(const char* lib_path, char* error_out, size
         return false;
     }
 
-    module_ = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
+    module_ = OpenModule(lib_path);
     if (module_ == NULL) {
-        WriteError(error_out, error_out_len, dlerror());
+        WriteError(error_out, error_out_len, LastLoaderError());
         return false;
     }
 
@@ -95,7 +138,7 @@ void RetrospectiveSdkBridge::Shutdown() {
     retro_status_text_ = NULL;
 
     if (module_ != NULL) {
-        dlclose(module_);
+        CloseModule(module_);
         module_ = NULL;
     }
 }
@@ -205,10 +248,8 @@ bool RetrospectiveSdkBridge::BindSymbol(
         return false;
     }
 
-    dlerror();
-    *out_fn = dlsym(module_, symbol_name);
-    const char* dlsym_error = dlerror();
-    if (dlsym_error != NULL || *out_fn == NULL) {
+    *out_fn = LookupSymbol(module_, symbol_name);
+    if (*out_fn == NULL) {
         WriteError(error_out, error_out_len, symbol_name);
         return false;
     }

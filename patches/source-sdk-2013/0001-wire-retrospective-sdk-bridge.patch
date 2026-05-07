@@ -1,0 +1,669 @@
+From 65d9d70c9cc0dcb1cb3365012fe03dab7a52355e Mon Sep 17 00:00:00 2001
+From: Leslie-John Richardson <lesliejohnrichardson@gmail.com>
+Date: Thu, 7 May 2026 02:37:16 +0200
+Subject: [PATCH] feat: wire retrospective sdk bridge into server runtime
+
+- add retrospective server bridge module and compile it in server_base.vpc
+
+- hook DLL init/map start/frame/shutdown paths and expose retro_* console diagnostics
+
+- track spawn/death counters via player_spawn and player_death game events
+---
+ src/game/server/gameinterface.cpp             | 286 ++++++++++++++++++
+ .../retrospective_sdk_bridge.cpp              | 230 ++++++++++++++
+ .../retrospective/retrospective_sdk_bridge.h  |  54 ++++
+ src/game/server/server_base.vpc               |   2 +
+ 4 files changed, 572 insertions(+)
+ create mode 100644 src/game/server/retrospective/retrospective_sdk_bridge.cpp
+ create mode 100644 src/game/server/retrospective/retrospective_sdk_bridge.h
+
+diff --git a/src/game/server/gameinterface.cpp b/src/game/server/gameinterface.cpp
+index eb99cdf..b8f2c94 100644
+--- a/src/game/server/gameinterface.cpp
++++ b/src/game/server/gameinterface.cpp
+@@ -50,12 +50,14 @@
+ #include "physics.h"
+ #include "igameevents.h"
+ #include "EventLog.h"
++#include "GameEventListener.h"
+ #include "datacache/idatacache.h"
+ #include "engine/ivdebugoverlay.h"
+ #include "shareddefs.h"
+ #include "props.h"
+ #include "timedeventmgr.h"
+ #include "gameinterface.h"
++#include "retrospective/retrospective_sdk_bridge.h"
+ #include "eventqueue.h"
+ #include "hltvdirector.h"
+ #if defined( REPLAY_ENABLED )
+@@ -566,6 +568,222 @@ EXPOSE_SINGLE_INTERFACE_GLOBALVAR(CServerGameDLL, IServerGameDLL, INTERFACEVERSI
+ // When bumping the version to this interface, check that our assumption is still valid and expose the older version in the same way
+ COMPILE_TIME_ASSERT( INTERFACEVERSION_SERVERGAMEDLL_INT == 12 );
+ 
++static RetrospectiveSdkBridge g_RetrospectiveBridge;
++static bool g_RetrospectiveFrameWarned = false;
++static bool g_RetrospectivePlayerSpawnWarned = false;
++static bool g_RetrospectivePlayerDeathWarned = false;
++static bool g_RetrospectivePulseEnabled = false;
++
++class CRetrospectiveGameEventBridge : public CGameEventListener
++{
++public:
++	void StartListening()
++	{
++		ListenForGameEvent( "player_spawn" );
++		ListenForGameEvent( "player_death" );
++	}
++
++	virtual void FireGameEvent( IGameEvent *event )
++	{
++		if ( event == NULL || engine == NULL || !g_RetrospectiveBridge.IsReady() )
++		{
++			return;
++		}
++
++		const char *eventName = event->GetName();
++		if ( eventName == NULL )
++		{
++			return;
++		}
++
++		if ( !Q_strcmp( eventName, "player_spawn" ) )
++		{
++			const int userId = event->GetInt( "userid" );
++			CBasePlayer *pPlayer = UTIL_PlayerByUserId( userId );
++			if ( pPlayer == NULL )
++			{
++				return;
++			}
++
++			const int playerSlot = pPlayer->entindex();
++			if ( playerSlot <= 0 )
++			{
++				return;
++			}
++
++			const int retroSpawnCode = g_RetrospectiveBridge.OnPlayerSpawn( static_cast<unsigned int>( playerSlot ) );
++			if ( retroSpawnCode != 0 && !g_RetrospectivePlayerSpawnWarned )
++			{
++				Warning( "Retrospective: player spawn event hook failed (%s)\n", g_RetrospectiveBridge.StatusText( retroSpawnCode ) );
++				g_RetrospectivePlayerSpawnWarned = true;
++			}
++			return;
++		}
++
++		if ( !Q_strcmp( eventName, "player_death" ) )
++		{
++			const int victimUserId = event->GetInt( "userid" );
++			const int attackerUserId = event->GetInt( "attacker" );
++
++			CBasePlayer *pVictim = UTIL_PlayerByUserId( victimUserId );
++			if ( pVictim == NULL )
++			{
++				return;
++			}
++
++			const int victimSlot = pVictim->entindex();
++			if ( victimSlot <= 0 )
++			{
++				return;
++			}
++
++			CBasePlayer *pAttacker = UTIL_PlayerByUserId( attackerUserId );
++			const int attackerSlot = pAttacker != NULL ? pAttacker->entindex() : 0;
++			const int retroDeathCode = g_RetrospectiveBridge.OnPlayerDeath(
++				static_cast<unsigned int>( victimSlot ),
++				attackerSlot > 0 ? static_cast<unsigned int>( attackerSlot ) : 0u );
++			if ( retroDeathCode != 0 && !g_RetrospectivePlayerDeathWarned )
++			{
++				Warning( "Retrospective: player death event hook failed (%s)\n", g_RetrospectiveBridge.StatusText( retroDeathCode ) );
++				g_RetrospectivePlayerDeathWarned = true;
++			}
++		}
++	}
++};
++
++static CRetrospectiveGameEventBridge g_RetrospectiveEventBridge;
++
++static const char *RetrospectiveCorePath()
++{
++	return CommandLine()->ParmValue( "-retrocore", "" );
++}
++
++static void RetrospectiveDrawPulseOverlay()
++{
++	if ( !g_RetrospectivePulseEnabled || !g_RetrospectiveBridge.IsReady() )
++	{
++		return;
++	}
++
++	CBasePlayer *pPlayer = UTIL_GetLocalPlayerOrListenServerHost();
++	if ( !pPlayer )
++	{
++		return;
++	}
++
++	Vector forward;
++	pPlayer->EyeVectors( &forward );
++
++	const unsigned int frameCount = g_RetrospectiveBridge.FrameCount();
++	const float phase = static_cast<float>( frameCount % 90 ) / 90.0f;
++	const float radius = 20.0f + ( phase * 24.0f );
++	const float crossSize = 12.0f + ( phase * 14.0f );
++	const int red = 40 + static_cast<int>( ( frameCount * 3 ) % 120 );
++	const int blue = 96 + static_cast<int>( frameCount % 120 );
++	const Vector markerPos = pPlayer->EyePosition() + ( forward * 220.0f );
++
++	char overlayText[128];
++	Q_snprintf( overlayText, sizeof( overlayText ), "retro pulse | frames=%u", frameCount );
++
++	NDebugOverlay::Circle( markerPos, QAngle( -90.0f, 0.0f, 0.0f ), radius, red, 255, blue, 180, true, 0.12f );
++	NDebugOverlay::Cross3D( markerPos, crossSize, red, 255, blue, true, 0.12f );
++	NDebugOverlay::Text( markerPos + Vector( 0.0f, 0.0f, ( radius * 0.6f ) + 8.0f ), overlayText, false, 0.12f );
++}
++
++CON_COMMAND( retro_ping, "Retrospective bridge smoke test: prints status and draws a debug marker in front of the command player." )
++{
++	CBasePlayer *pPlayer = ToBasePlayer( UTIL_GetCommandClient() );
++	if ( !pPlayer )
++	{
++		Warning( "Retrospective: retro_ping requires a player command context\n" );
++		return;
++	}
++
++	if ( !g_RetrospectiveBridge.IsReady() )
++	{
++		Warning( "Retrospective: bridge is not ready (launch with -retrocore <path>)\n" );
++		return;
++	}
++
++	Vector forward;
++	pPlayer->EyeVectors( &forward );
++	const Vector markerPos = pPlayer->EyePosition() + ( forward * 160.0f );
++
++	const unsigned int frameCount = g_RetrospectiveBridge.FrameCount();
++	const float pulseSize = 12.0f + static_cast<float>( frameCount % 18 );
++	const int pulseBlue = 96 + static_cast<int>( frameCount % 160 );
++
++	char overlayText[128];
++	Q_snprintf( overlayText, sizeof( overlayText ), "retrospective ok | frames=%u", frameCount );
++
++	NDebugOverlay::Cross3D( markerPos, pulseSize, 32, 255, pulseBlue, true, 8.0f );
++	NDebugOverlay::Sphere( markerPos, pulseSize * 0.6f, 32, 255, pulseBlue, true, 8.0f );
++	NDebugOverlay::Text( markerPos + Vector( 0.0f, 0.0f, pulseSize + 6.0f ), overlayText, false, 8.0f );
++
++	Msg( "Retrospective: retro_ping api=%u id=%s frames=%u\n",
++		g_RetrospectiveBridge.ApiVersion(),
++		g_RetrospectiveBridge.CoreId(),
++		frameCount );
++}
++
++CON_COMMAND( retro_status, "Retrospective bridge status (no player context required)." )
++{
++	if ( !g_RetrospectiveBridge.IsReady() )
++	{
++		Msg( "Retrospective: status ready=0\n" );
++		return;
++	}
++
++	Msg( "Retrospective: status ready=1 api=%u id=%s frames=%u\n",
++		g_RetrospectiveBridge.ApiVersion(),
++		g_RetrospectiveBridge.CoreId(),
++		g_RetrospectiveBridge.FrameCount() );
++	Msg( "Retrospective: events spawn_count=%u death_count=%u last_spawn=%u last_victim=%u last_attacker=%u\n",
++		g_RetrospectiveBridge.PlayerSpawnCount(),
++		g_RetrospectiveBridge.PlayerDeathCount(),
++		g_RetrospectiveBridge.LastSpawnPlayerSlot(),
++		g_RetrospectiveBridge.LastDeathVictimSlot(),
++		g_RetrospectiveBridge.LastDeathAttackerSlot() );
++}
++
++CON_COMMAND( retro_pulse, "Retrospective pulse overlay toggle. Usage: retro_pulse [0|1|off|on|false|true]" )
++{
++	if ( !g_RetrospectiveBridge.IsReady() )
++	{
++		Warning( "Retrospective: bridge is not ready (launch with -retrocore <path>)\n" );
++		return;
++	}
++
++	bool newState = !g_RetrospectivePulseEnabled;
++
++	if ( args.ArgC() > 1 )
++	{
++		const char *value = args.Arg( 1 );
++		if ( value == NULL || value[0] == '\0' )
++		{
++			Warning( "Retrospective: retro_pulse expects 0/1/off/on/false/true\n" );
++			return;
++		}
++
++		if ( !Q_stricmp( value, "1" ) || !Q_stricmp( value, "on" ) || !Q_stricmp( value, "true" ) )
++		{
++			newState = true;
++		}
++		else if ( !Q_stricmp( value, "0" ) || !Q_stricmp( value, "off" ) || !Q_stricmp( value, "false" ) )
++		{
++			newState = false;
++		}
++		else
++		{
++			Warning( "Retrospective: retro_pulse expects 0/1/off/on/false/true\n" );
++			return;
++		}
++	}
++
++	g_RetrospectivePulseEnabled = newState;
++	Msg( "Retrospective: retro_pulse %s\n", g_RetrospectivePulseEnabled ? "ON" : "OFF" );
++}
++
+ bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory, 
+ 		CreateInterfaceFn physicsFactory, CreateInterfaceFn fileSystemFactory, 
+ 		CGlobalVars *pGlobals)
+@@ -745,6 +963,31 @@ bool CServerGameDLL::DLLInit( CreateInterfaceFn appSystemFactory,
+ 	gamestatsuploader->InitConnection();
+ #endif
+ 
++	const char *pRetroCorePath = RetrospectiveCorePath();
++	if ( pRetroCorePath != NULL && pRetroCorePath[0] != '\0' )
++	{
++		char retroError[512];
++		if ( g_RetrospectiveBridge.Startup( pRetroCorePath, retroError, sizeof( retroError ) ) )
++		{
++			g_RetrospectiveFrameWarned = false;
++			g_RetrospectivePlayerSpawnWarned = false;
++			g_RetrospectivePlayerDeathWarned = false;
++			g_RetrospectiveEventBridge.StartListening();
++			Msg( "Retrospective: loaded core '%s' (api=%u, id=%s)\n",
++				pRetroCorePath,
++				g_RetrospectiveBridge.ApiVersion(),
++				g_RetrospectiveBridge.CoreId() );
++		}
++		else
++		{
++			Warning( "Retrospective: failed to load core '%s' (%s)\n", pRetroCorePath, retroError );
++		}
++	}
++	else
++	{
++		Msg( "Retrospective: no -retrocore path specified; bridge disabled\n" );
++	}
++
+ 	return true;
+ }
+ 
+@@ -755,6 +998,12 @@ void CServerGameDLL::PostInit()
+ 
+ void CServerGameDLL::DLLShutdown( void )
+ {
++	g_RetrospectiveBridge.Shutdown();
++	g_RetrospectiveEventBridge.StopListeningForAllEvents();
++	g_RetrospectiveFrameWarned = false;
++	g_RetrospectivePlayerSpawnWarned = false;
++	g_RetrospectivePlayerDeathWarned = false;
++	g_RetrospectivePulseEnabled = false;
+ 
+ 	// Due to dependencies, these are not autogamesystems
+ 	ModelSoundsCacheShutdown();
+@@ -971,6 +1220,17 @@ bool CServerGameDLL::LevelInit( const char *pMapName, char const *pMapEntities,
+ 	ResetWindspeed();
+ 	UpdateChapterRestrictions( pMapName );
+ 
++	if ( g_RetrospectiveBridge.IsReady() )
++	{
++		const int retroMapCode = g_RetrospectiveBridge.OnMapStart( pMapName );
++		if ( retroMapCode != 0 )
++		{
++			Warning( "Retrospective: map start hook failed for '%s' (%s)\n", pMapName, g_RetrospectiveBridge.StatusText( retroMapCode ) );
++		}
++		g_RetrospectivePlayerSpawnWarned = false;
++		g_RetrospectivePlayerDeathWarned = false;
++	}
++
+ 	if ( IsX360() && !background && (gpGlobals->maxClients == 1) && (g_nCurrentChapterIndex >= 0) )
+ 	{
+ 		// Single player games tell xbox live what game & chapter the user is playing
+@@ -1214,6 +1474,32 @@ void CServerGameDLL::GameFrame( bool simulating )
+ 		gpGlobals->frametime *= 2.0f;
+ 	}
+ 
++	if ( simulating && g_RetrospectiveBridge.IsReady() )
++	{
++		float frameSeconds = gpGlobals->frametime;
++		if ( frameSeconds < 0.0f )
++		{
++			frameSeconds = 0.0f;
++		}
++		if ( frameSeconds > 0.5f )
++		{
++			frameSeconds = 0.5f;
++		}
++
++		const unsigned int dtMs = static_cast<unsigned int>( frameSeconds * 1000.0f );
++		const int retroFrameCode = g_RetrospectiveBridge.OnFrame( dtMs );
++		if ( retroFrameCode != 0 && !g_RetrospectiveFrameWarned )
++		{
++			Warning( "Retrospective: frame hook failed (%s)\n", g_RetrospectiveBridge.StatusText( retroFrameCode ) );
++			g_RetrospectiveFrameWarned = true;
++		}
++	}
++
++	if ( simulating )
++	{
++		RetrospectiveDrawPulseOverlay();
++	}
++
+ 	g_flServerCurTime = gpGlobals->curtime;
+ 	float oldframetime = gpGlobals->frametime;
+ 
+diff --git a/src/game/server/retrospective/retrospective_sdk_bridge.cpp b/src/game/server/retrospective/retrospective_sdk_bridge.cpp
+new file mode 100644
+index 0000000..7cb445a
+--- /dev/null
++++ b/src/game/server/retrospective/retrospective_sdk_bridge.cpp
+@@ -0,0 +1,230 @@
++#include "cbase.h"
++#include "retrospective_sdk_bridge.h"
++
++#include <dlfcn.h>
++#include <string.h>
++
++RetrospectiveSdkBridge::RetrospectiveSdkBridge() :
++	m_Module( NULL ),
++	m_Started( false ),
++	m_RetroApiVersion( NULL ),
++	m_RetroCoreId( NULL ),
++	m_RetroInit( NULL ),
++	m_RetroShutdown( NULL ),
++	m_RetroFrame( NULL ),
++	m_RetroOnMapStart( NULL ),
++	m_RetroOnPlayerSpawn( NULL ),
++	m_RetroOnPlayerDeath( NULL ),
++	m_RetroFrameCount( NULL ),
++	m_RetroPlayerSpawnCount( NULL ),
++	m_RetroPlayerDeathCount( NULL ),
++	m_RetroLastSpawnPlayerSlot( NULL ),
++	m_RetroLastDeathVictimSlot( NULL ),
++	m_RetroLastDeathAttackerSlot( NULL ),
++	m_RetroStatusText( NULL ) {
++}
++
++RetrospectiveSdkBridge::~RetrospectiveSdkBridge() {
++	Shutdown();
++}
++
++bool RetrospectiveSdkBridge::Startup( const char *libPath, char *errorOut, size_t errorOutLen ) {
++	if ( m_Started ) {
++		return true;
++	}
++
++	if ( libPath == NULL || libPath[0] == '\0' ) {
++		WriteError( errorOut, errorOutLen, "empty rust core path" );
++		return false;
++	}
++
++	m_Module = dlopen( libPath, RTLD_NOW | RTLD_LOCAL );
++	if ( m_Module == NULL ) {
++		WriteError( errorOut, errorOutLen, dlerror() );
++		return false;
++	}
++
++	if ( !BindSymbol( "retro_api_version", reinterpret_cast<void **>( &m_RetroApiVersion ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_core_id", reinterpret_cast<void **>( &m_RetroCoreId ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_init", reinterpret_cast<void **>( &m_RetroInit ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_shutdown", reinterpret_cast<void **>( &m_RetroShutdown ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_frame", reinterpret_cast<void **>( &m_RetroFrame ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_on_map_start", reinterpret_cast<void **>( &m_RetroOnMapStart ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_frame_count", reinterpret_cast<void **>( &m_RetroFrameCount ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_on_player_spawn", reinterpret_cast<void **>( &m_RetroOnPlayerSpawn ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_on_player_death", reinterpret_cast<void **>( &m_RetroOnPlayerDeath ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_player_spawn_count", reinterpret_cast<void **>( &m_RetroPlayerSpawnCount ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_player_death_count", reinterpret_cast<void **>( &m_RetroPlayerDeathCount ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_last_spawn_player_slot", reinterpret_cast<void **>( &m_RetroLastSpawnPlayerSlot ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_last_death_victim_slot", reinterpret_cast<void **>( &m_RetroLastDeathVictimSlot ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_last_death_attacker_slot", reinterpret_cast<void **>( &m_RetroLastDeathAttackerSlot ), errorOut, errorOutLen ) ||
++		!BindSymbol( "retro_status_text", reinterpret_cast<void **>( &m_RetroStatusText ), errorOut, errorOutLen ) ) {
++		Shutdown();
++		return false;
++	}
++
++	const int initCode = m_RetroInit();
++	if ( initCode != 0 ) {
++		WriteError( errorOut, errorOutLen, StatusText( initCode ) );
++		Shutdown();
++		return false;
++	}
++
++	m_Started = true;
++	return true;
++}
++
++void RetrospectiveSdkBridge::Shutdown() {
++	if ( m_RetroShutdown != NULL && m_Started ) {
++		m_RetroShutdown();
++	}
++
++	m_Started = false;
++	m_RetroApiVersion = NULL;
++	m_RetroCoreId = NULL;
++	m_RetroInit = NULL;
++	m_RetroShutdown = NULL;
++	m_RetroFrame = NULL;
++	m_RetroOnMapStart = NULL;
++	m_RetroOnPlayerSpawn = NULL;
++	m_RetroOnPlayerDeath = NULL;
++	m_RetroFrameCount = NULL;
++	m_RetroPlayerSpawnCount = NULL;
++	m_RetroPlayerDeathCount = NULL;
++	m_RetroLastSpawnPlayerSlot = NULL;
++	m_RetroLastDeathVictimSlot = NULL;
++	m_RetroLastDeathAttackerSlot = NULL;
++	m_RetroStatusText = NULL;
++
++	if ( m_Module != NULL ) {
++		dlclose( m_Module );
++		m_Module = NULL;
++	}
++}
++
++bool RetrospectiveSdkBridge::IsReady() const {
++	return m_Started && m_Module != NULL;
++}
++
++int RetrospectiveSdkBridge::OnMapStart( const char *mapName ) const {
++	if ( !IsReady() || m_RetroOnMapStart == NULL ) {
++		return -1;
++	}
++	return m_RetroOnMapStart( mapName );
++}
++
++int RetrospectiveSdkBridge::OnFrame( unsigned int dtMs ) const {
++	if ( !IsReady() || m_RetroFrame == NULL ) {
++		return -1;
++	}
++	return m_RetroFrame( dtMs );
++}
++
++int RetrospectiveSdkBridge::OnPlayerSpawn( unsigned int playerSlot ) const {
++	if ( !IsReady() || m_RetroOnPlayerSpawn == NULL ) {
++		return -1;
++	}
++	return m_RetroOnPlayerSpawn( playerSlot );
++}
++
++int RetrospectiveSdkBridge::OnPlayerDeath( unsigned int victimSlot, unsigned int attackerSlot ) const {
++	if ( !IsReady() || m_RetroOnPlayerDeath == NULL ) {
++		return -1;
++	}
++	return m_RetroOnPlayerDeath( victimSlot, attackerSlot );
++}
++
++unsigned int RetrospectiveSdkBridge::FrameCount() const {
++	if ( !IsReady() || m_RetroFrameCount == NULL ) {
++		return 0;
++	}
++	return m_RetroFrameCount();
++}
++
++unsigned int RetrospectiveSdkBridge::PlayerSpawnCount() const {
++	if ( !IsReady() || m_RetroPlayerSpawnCount == NULL ) {
++		return 0;
++	}
++	return m_RetroPlayerSpawnCount();
++}
++
++unsigned int RetrospectiveSdkBridge::PlayerDeathCount() const {
++	if ( !IsReady() || m_RetroPlayerDeathCount == NULL ) {
++		return 0;
++	}
++	return m_RetroPlayerDeathCount();
++}
++
++unsigned int RetrospectiveSdkBridge::LastSpawnPlayerSlot() const {
++	if ( !IsReady() || m_RetroLastSpawnPlayerSlot == NULL ) {
++		return 0;
++	}
++	return m_RetroLastSpawnPlayerSlot();
++}
++
++unsigned int RetrospectiveSdkBridge::LastDeathVictimSlot() const {
++	if ( !IsReady() || m_RetroLastDeathVictimSlot == NULL ) {
++		return 0;
++	}
++	return m_RetroLastDeathVictimSlot();
++}
++
++unsigned int RetrospectiveSdkBridge::LastDeathAttackerSlot() const {
++	if ( !IsReady() || m_RetroLastDeathAttackerSlot == NULL ) {
++		return 0;
++	}
++	return m_RetroLastDeathAttackerSlot();
++}
++
++const char *RetrospectiveSdkBridge::StatusText( int code ) const {
++	if ( m_RetroStatusText == NULL ) {
++		return "status_unavailable";
++	}
++	return m_RetroStatusText( code );
++}
++
++unsigned int RetrospectiveSdkBridge::ApiVersion() const {
++	if ( m_RetroApiVersion == NULL ) {
++		return 0;
++	}
++	return m_RetroApiVersion();
++}
++
++const char *RetrospectiveSdkBridge::CoreId() const {
++	if ( m_RetroCoreId == NULL ) {
++		return "core_unavailable";
++	}
++	return m_RetroCoreId();
++}
++
++bool RetrospectiveSdkBridge::BindSymbol( const char *symbolName, void **outFn, char *errorOut, size_t errorOutLen ) {
++	if ( m_Module == NULL || outFn == NULL ) {
++		WriteError( errorOut, errorOutLen, "bind failed: invalid loader state" );
++		return false;
++	}
++
++	dlerror();
++	*outFn = dlsym( m_Module, symbolName );
++	const char *symbolError = dlerror();
++	if ( symbolError != NULL || *outFn == NULL ) {
++		WriteError( errorOut, errorOutLen, symbolName );
++		return false;
++	}
++	return true;
++}
++
++void RetrospectiveSdkBridge::WriteError( char *errorOut, size_t errorOutLen, const char *message ) {
++	if ( errorOut == NULL || errorOutLen == 0 ) {
++		return;
++	}
++
++	if ( message == NULL ) {
++		message = "unknown error";
++	}
++
++	const size_t maxCopy = errorOutLen - 1;
++	const size_t srcLen = strlen( message );
++	const size_t copyLen = srcLen < maxCopy ? srcLen : maxCopy;
++	memcpy( errorOut, message, copyLen );
++	errorOut[copyLen] = '\0';
++}
+diff --git a/src/game/server/retrospective/retrospective_sdk_bridge.h b/src/game/server/retrospective/retrospective_sdk_bridge.h
+new file mode 100644
+index 0000000..ed1a4b8
+--- /dev/null
++++ b/src/game/server/retrospective/retrospective_sdk_bridge.h
+@@ -0,0 +1,54 @@
++#pragma once
++
++#include <stddef.h>
++
++class RetrospectiveSdkBridge {
++public:
++	RetrospectiveSdkBridge();
++	~RetrospectiveSdkBridge();
++
++	bool Startup( const char *libPath, char *errorOut, size_t errorOutLen );
++	void Shutdown();
++
++	bool IsReady() const;
++
++	int OnMapStart( const char *mapName ) const;
++	int OnFrame( unsigned int dtMs ) const;
++	int OnPlayerSpawn( unsigned int playerSlot ) const;
++	int OnPlayerDeath( unsigned int victimSlot, unsigned int attackerSlot ) const;
++	unsigned int FrameCount() const;
++	unsigned int PlayerSpawnCount() const;
++	unsigned int PlayerDeathCount() const;
++	unsigned int LastSpawnPlayerSlot() const;
++	unsigned int LastDeathVictimSlot() const;
++	unsigned int LastDeathAttackerSlot() const;
++	const char *StatusText( int code ) const;
++	unsigned int ApiVersion() const;
++	const char *CoreId() const;
++
++private:
++	RetrospectiveSdkBridge( const RetrospectiveSdkBridge & );
++	RetrospectiveSdkBridge &operator=( const RetrospectiveSdkBridge & );
++
++	bool BindSymbol( const char *symbolName, void **outFn, char *errorOut, size_t errorOutLen );
++	static void WriteError( char *errorOut, size_t errorOutLen, const char *message );
++
++	void *m_Module;
++	bool m_Started;
++
++	unsigned int ( *m_RetroApiVersion )();
++	const char *( *m_RetroCoreId )();
++	int ( *m_RetroInit )();
++	void ( *m_RetroShutdown )();
++	int ( *m_RetroFrame )( unsigned int dtMs );
++	int ( *m_RetroOnMapStart )( const char *mapName );
++	int ( *m_RetroOnPlayerSpawn )( unsigned int playerSlot );
++	int ( *m_RetroOnPlayerDeath )( unsigned int victimSlot, unsigned int attackerSlot );
++	unsigned int ( *m_RetroFrameCount )();
++	unsigned int ( *m_RetroPlayerSpawnCount )();
++	unsigned int ( *m_RetroPlayerDeathCount )();
++	unsigned int ( *m_RetroLastSpawnPlayerSlot )();
++	unsigned int ( *m_RetroLastDeathVictimSlot )();
++	unsigned int ( *m_RetroLastDeathAttackerSlot )();
++	const char *( *m_RetroStatusText )( int code );
++};
+diff --git a/src/game/server/server_base.vpc b/src/game/server/server_base.vpc
+index 32567c5..0b7d340 100644
+--- a/src/game/server/server_base.vpc
++++ b/src/game/server/server_base.vpc
+@@ -398,6 +398,8 @@ $Project
+ 		$File	"game_ui.cpp"
+ 		$File	"gameinterface.cpp"
+ 		$File	"gameinterface.h"
++		$File	"retrospective\retrospective_sdk_bridge.cpp"
++		$File	"retrospective\retrospective_sdk_bridge.h"
+ 		$File	"$SRCDIR\game\shared\gamemovement.cpp"
+ 		$File	"$SRCDIR\game\shared\gamemovement.h"
+ 		$File	"$SRCDIR\game\shared\gamerules.cpp"
+-- 
+2.54.0
+

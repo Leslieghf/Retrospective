@@ -1,8 +1,76 @@
 #include "retrospective_loader.hpp"
 
+#include <string>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 
 namespace {
+#if defined(_WIN32)
+std::string win32_last_error() {
+    const DWORD code = GetLastError();
+    if (code == 0) {
+        return "unknown";
+    }
+
+    LPSTR message_buffer = nullptr;
+    const DWORD size = FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr,
+        code,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        reinterpret_cast<LPSTR>(&message_buffer),
+        0,
+        nullptr);
+
+    std::string message = "win32_error_" + std::to_string(code);
+    if (size > 0 && message_buffer != nullptr) {
+        message.assign(message_buffer, size);
+        LocalFree(message_buffer);
+    }
+    return message;
+}
+
+void* open_module(const char* path, std::string& error_out) {
+    HMODULE module = LoadLibraryA(path);
+    if (module == nullptr) {
+        error_out = "LoadLibraryA failed: " + win32_last_error();
+        return nullptr;
+    }
+    return reinterpret_cast<void*>(module);
+}
+
+void close_module(void* handle) {
+    FreeLibrary(reinterpret_cast<HMODULE>(handle));
+}
+
+template <typename T>
+bool bind_symbol(void* handle, const char* name, T& out_fn, std::string& error_out) {
+    auto raw = GetProcAddress(reinterpret_cast<HMODULE>(handle), name);
+    if (raw == nullptr) {
+        error_out = std::string("missing symbol: ") + name + " (GetProcAddress failed: " + win32_last_error() + ")";
+        return false;
+    }
+    out_fn = reinterpret_cast<T>(raw);
+    return true;
+}
+#else
+void* open_module(const char* path, std::string& error_out) {
+    void* module = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (module == nullptr) {
+        const char* err = dlerror();
+        error_out = err != nullptr ? err : "dlopen failed";
+    }
+    return module;
+}
+
+void close_module(void* handle) {
+    dlclose(handle);
+}
+
 template <typename T>
 bool bind_symbol(void* handle, const char* name, T& out_fn, std::string& error_out) {
     dlerror();
@@ -13,6 +81,7 @@ bool bind_symbol(void* handle, const char* name, T& out_fn, std::string& error_o
     }
     return true;
 }
+#endif
 } // namespace
 
 RetrospectiveLoader::~RetrospectiveLoader() {
@@ -22,10 +91,8 @@ RetrospectiveLoader::~RetrospectiveLoader() {
 bool RetrospectiveLoader::load(const std::string& lib_path, std::string& error_out) {
     unload();
 
-    handle_ = dlopen(lib_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    handle_ = open_module(lib_path.c_str(), error_out);
     if (handle_ == nullptr) {
-        const char* err = dlerror();
-        error_out = err != nullptr ? err : "dlopen failed";
         return false;
     }
 
@@ -53,7 +120,7 @@ bool RetrospectiveLoader::load(const std::string& lib_path, std::string& error_o
 
 void RetrospectiveLoader::unload() {
     if (handle_ != nullptr) {
-        dlclose(handle_);
+        close_module(handle_);
         handle_ = nullptr;
     }
 

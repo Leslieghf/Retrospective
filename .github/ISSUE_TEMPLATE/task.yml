@@ -1,0 +1,41 @@
+name: Task
+description: Track one scoped engineering task
+title: "Task: "
+labels:
+  - task
+body:
+  - type: textarea
+    id: intent
+    attributes:
+      label: Intent
+      description: What outcome this task should produce.
+      placeholder: 1-3 short lines.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: In Scope
+      placeholder: |
+        - [ ] Outcome 1
+        - [ ] Outcome 2
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of Scope (Optional)
+      placeholder: |
+        - Non-goal 1
+        - Non-goal 2
+    validations:
+      required: false
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation Plan
+      placeholder: |
+        - [ ] cargo test -p retrospective_core
+        - [ ] ./scripts/run_phase1_harness.sh
+    validations:
+      required: true

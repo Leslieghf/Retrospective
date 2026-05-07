@@ -2,7 +2,7 @@
 
 This phase gives you a minimal but real runtime bridge:
 - Rust shared library with C ABI exports
-- C++ loader that binds symbols with `dlopen/dlsym`
+- C++ loader that binds symbols with platform dynamic-loader APIs (`dlopen/dlsym` on Unix, `LoadLibrary/GetProcAddress` on Windows)
 - Harness executable that simulates Source-side calls (`init`, `map_start`, `frame`, `player_spawn`, `player_death`)
 
 ## What Was Added

@@ -21,26 +21,32 @@ Hook points now call the Rust bridge:
 - `CServerGameDLL::DLLShutdown` (shutdown/unload)
 
 Runtime flag:
-- `-retrocore /absolute/path/to/libretrospective_core.so`
+- `-retrocore /absolute/path/to/<retrospective_core dynamic library>`
 
 ## Build + Run Commands
 
-Build Source SDK (containerized Steam Runtime):
+Sync SDK hook patchset into a fresh SDK checkout:
 
 ```bash
-./scripts/phase2_build_source_sdk.sh
+cargo xtask sdk-sync-patches
+```
+
+Build Source SDK:
+
+```bash
+cargo xtask sdk-build --mode release
 ```
 
 Build Rust core and copy into SDK mod bin:
 
 ```bash
-./scripts/phase2_build_rust_core_for_sdk.sh
+cargo xtask sdk-install-core --target x86_64-unknown-linux-gnu
 ```
 
 Launch HL2MP mod with Rust core attached:
 
 ```bash
-./scripts/phase2_launch_hl2mp_with_core.sh
+cargo xtask sdk-launch
 ```
 
 ## Smoke Test Commands
@@ -60,6 +66,7 @@ After loading into a map, open the developer console and run:
 - The official `buildallprojects` script currently generates/builds HL2MP + TF projects by default.
 - Your Rust bridge is now a live runtime component for SDK game code via `-retrocore`.
 - `external/` is ignored by this repo’s `.gitignore`, so SDK edits are local workspace state, not repo-tracked.
+- Windows build path uses `createallprojects.bat` + `msbuild` via `cargo xtask sdk-build`; launch automation remains Linux-only for now.
 
 ## Troubleshooting (Linux)
 
@@ -68,7 +75,7 @@ After loading into a map, open the developer console and run:
 - Fix:
   - Steam -> Library -> Tools -> `Source SDK Base 2013 Multiplayer` -> Properties -> Compatibility
   - Disable forced Steam Play/Proton for this tool
-  - Verify game files, then rerun `./scripts/phase2_launch_hl2mp_with_core.sh`
+  - Verify game files, then rerun `cargo xtask sdk-launch`
 - If you hit `Unable to load module engine.so` / `VCvarQuery001`, the root cause on Arch is usually missing `libcurl-gnutls.so.4` in the loader path.
 - The launch script now auto-installs `libcurl-gnutls.so.4` into `.../Source SDK Base 2013 Multiplayer/bin/linux64/` from local Steam runtimes when needed.
 - If you hit `gameinfo.txt doesn't exist in subdirectory mod_hl2mp`, use the updated launch script: it now passes an absolute `-game` path to the built mod directory.

@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust/retrospective_core"]
+members = ["rust/retrospective_core", "rust/xtask"]
 resolver = "2"
 
 [profile.release]

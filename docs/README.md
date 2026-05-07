@@ -1,36 +1,31 @@
-# Internal Notes: HL2 Modding Direction
+# Retrospective Docs
 
-## Context
-- Focus: build a custom Half-Life 2 campaign/mod using the post-20th-anniversary Workshop-integrated setup.
-- Observed content model: `assets` and `campaigns` Workshop items.
-- Existing repo state: mostly Hammer outputs (`.vmf`, `.bsp`) for map work.
+This directory is the canonical docs surface for active Retrospective development.
 
-## Developer Background
-- Strong practical Source/Hammer experience (mapping, workflows, content pipeline familiarity).
-- New to Source C++ code-level mod development.
-- Strong Rust experience; open to exploring Rust-assisted workflows.
+## Read Order
 
-## Core Goal
-- Create a full campaign-style custom experience, not just standalone asset packs.
-- Determine the real code-modification boundary for modern campaign mods:
-  - what can be done with campaign + assets only
-  - what still requires deeper native/engine-side mod work
+1. [NOW.md](NOW.md)
+2. [ARCHITECTURE.md](ARCHITECTURE.md)
+3. [WORKFLOWS.md](WORKFLOWS.md)
+4. [CONTRACTS.md](CONTRACTS.md)
+5. [DECISIONS.md](DECISIONS.md)
+6. [CONTRIBUTING.md](CONTRIBUTING.md)
+7. [CPP_LEARNING_PATH.md](CPP_LEARNING_PATH.md)
+8. [CPP_RUST_MENTAL_MODEL.md](CPP_RUST_MENTAL_MODEL.md)
+9. [XTASK.md](XTASK.md)
+10. [PHASE1_BOOTSTRAP.md](PHASE1_BOOTSTRAP.md)
+11. [PHASE2_SDK_WIRING.md](PHASE2_SDK_WIRING.md)
+12. [SOURCE_MOD_WIRING.md](SOURCE_MOD_WIRING.md)
 
-## Current Exploration Threads
-1. Understand current HL2/Episodes Workshop framework limits and load-order behavior.
-2. Identify practical path to scripted/gameplay extensions in the new pipeline.
-3. Evaluate whether a Rust bridge/library approach is viable for this project, vs. direct C++ in Source SDK style workflows.
+## Entry By Intent
 
-## Working Assumptions
-- Campaigns may depend on custom assets and packaged logic.
-- Unclear whether full engine-level behavior changes are possible within campaign packaging alone.
-- Any serious engine-side changes likely still involve native code paths.
-
-## Reference
-- Workshop discussion/guidance to review:  
-  `https://steamcommunity.com/sharedfiles/filedetails/?id=3367265657`
-
-## Setup Docs
-- Phase 1 Rust/C++ bootstrap: [PHASE1_BOOTSTRAP.md](/home/leslieghf/Documents/GitHub/Retrospective/docs/PHASE1_BOOTSTRAP.md)
-- Source mod wiring draft: [SOURCE_MOD_WIRING.md](/home/leslieghf/Documents/GitHub/Retrospective/docs/SOURCE_MOD_WIRING.md)
-- Phase 2 SDK runtime wiring: [PHASE2_SDK_WIRING.md](/home/leslieghf/Documents/GitHub/Retrospective/docs/PHASE2_SDK_WIRING.md)
+- Current direction and active scope: [NOW.md](NOW.md)
+- Runtime/layer boundaries: [ARCHITECTURE.md](ARCHITECTURE.md)
+- Daily commands and Git workflow: [WORKFLOWS.md](WORKFLOWS.md)
+- ABI and compatibility policy: [CONTRACTS.md](CONTRACTS.md)
+- Durable policy decisions: [DECISIONS.md](DECISIONS.md)
+- Contribution expectations: [CONTRIBUTING.md](CONTRIBUTING.md)
+- C++ ramp plan for this codebase: [CPP_LEARNING_PATH.md](CPP_LEARNING_PATH.md)
+- Rust-vs-C++ differences for this repo: [CPP_RUST_MENTAL_MODEL.md](CPP_RUST_MENTAL_MODEL.md)
+- Task runner surface: [XTASK.md](XTASK.md)
+- Bootstrap and SDK integration details: [PHASE1_BOOTSTRAP.md](PHASE1_BOOTSTRAP.md), [PHASE2_SDK_WIRING.md](PHASE2_SDK_WIRING.md), [SOURCE_MOD_WIRING.md](SOURCE_MOD_WIRING.md)

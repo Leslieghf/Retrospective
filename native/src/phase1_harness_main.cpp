@@ -5,7 +5,14 @@
 #include <string>
 
 int main(int argc, char** argv) {
-    const std::string default_path = "target/release/libretrospective_core.so";
+    const std::string default_path =
+#if defined(_WIN32)
+        "target\\release\\retrospective_core.dll";
+#elif defined(__APPLE__)
+        "target/release/libretrospective_core.dylib";
+#else
+        "target/release/libretrospective_core.so";
+#endif
     const std::string lib_path = argc > 1 ? argv[1] : default_path;
 
     RetrospectiveLoader loader;
