@@ -1,6 +1,17 @@
-target/
-build/
+# Build outputs
+/target/
+/build/
 *.so
 *.a
 *.o
-external/
+
+# External SDK checkout (separate Git repo)
+/external/
+
+# IDE/project-local metadata
+/.idea/
+*.iml
+
+# Local agent/runtime state
+/.agents/
+/.codex/
