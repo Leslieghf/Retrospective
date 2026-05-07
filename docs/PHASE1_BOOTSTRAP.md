@@ -3,7 +3,7 @@
 This phase gives you a minimal but real runtime bridge:
 - Rust shared library with C ABI exports
 - C++ loader that binds symbols with `dlopen/dlsym`
-- Harness executable that simulates Source-side calls (`init`, `map_start`, `frame`)
+- Harness executable that simulates Source-side calls (`init`, `map_start`, `frame`, `player_spawn`, `player_death`)
 
 ## What Was Added
 
@@ -28,6 +28,8 @@ Expected signal:
 - API version + core id printed
 - `init` and `map_start` return `ok`
 - `frame_count` increments
+- player event counts (`player_spawn_count`, `player_death_count`) update
+- invalid event inputs return expected status codes (`invalid_player_slot`, `invalid_victim_slot`)
 
 ## Arch Linux: Manual System Dependencies
 

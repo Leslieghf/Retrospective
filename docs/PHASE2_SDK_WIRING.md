@@ -17,6 +17,7 @@ Hook points now call the Rust bridge:
 - `CServerGameDLL::DLLInit` (startup/load core)
 - `CServerGameDLL::LevelInit` (map start callback)
 - `CServerGameDLL::GameFrame` (per-frame callback)
+- `CServerGameClients::ClientSpawned` (player spawn callback)
 - `CServerGameDLL::DLLShutdown` (shutdown/unload)
 
 Runtime flag:
@@ -47,9 +48,11 @@ Launch HL2MP mod with Rust core attached:
 After loading into a map, open the developer console and run:
 
 - `retro_status`
-  - prints bridge state + Rust frame counter in console.
+  - prints bridge state + Rust frame counter + event counters in console.
 - `retro_ping`
   - prints bridge state and draws a visible debug marker/text in front of you.
+- respawn once (`kill` in console is enough), then run `retro_status` again:
+  - `spawn_count` should increment and `last_spawn` should match your player slot.
 
 ## Notes
 

@@ -8,6 +8,8 @@ The class wraps Rust lifecycle calls:
 - `startup(path)` -> `retro_init`
 - `on_level_init(map)` -> `retro_on_map_start`
 - `on_game_frame(dt)` -> `retro_frame`
+- `on_player_spawn(slot)` -> `retro_on_player_spawn`
+- `on_player_death(victim_slot, attacker_slot)` -> `retro_on_player_death`
 - `shutdown()` -> `retro_shutdown`
 
 ## Integration Pattern (Phase 2)
@@ -17,6 +19,8 @@ Wire calls at high-level hooks:
 - game startup / dll init: call `startup(...)`
 - level/map init: call `on_level_init(...)`
 - per-frame tick: call `on_game_frame(...)`
+- player spawn callback: call `on_player_spawn(...)`
+- player death callback: call `on_player_death(...)`
 - game shutdown / dll unload: call `shutdown()`
 
 Keep `retrospective_loader.*` and `retrospective_source_bridge.*` in a shared module that both client/server code can include as needed.
@@ -25,4 +29,3 @@ Keep `retrospective_loader.*` and `retrospective_source_bridge.*` in a shared mo
 
 - This file does not assume exact hook symbol names yet.
 - During actual SDK integration, we will map these calls to concrete locations in your chosen Source 2013 branch files.
-

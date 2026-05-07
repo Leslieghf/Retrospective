@@ -12,7 +12,14 @@ RetrospectiveSdkBridge::RetrospectiveSdkBridge()
       retro_shutdown_(NULL),
       retro_frame_(NULL),
       retro_on_map_start_(NULL),
+      retro_on_player_spawn_(NULL),
+      retro_on_player_death_(NULL),
       retro_frame_count_(NULL),
+      retro_player_spawn_count_(NULL),
+      retro_player_death_count_(NULL),
+      retro_last_spawn_player_slot_(NULL),
+      retro_last_death_victim_slot_(NULL),
+      retro_last_death_attacker_slot_(NULL),
       retro_status_text_(NULL) {}
 
 RetrospectiveSdkBridge::~RetrospectiveSdkBridge() {
@@ -42,6 +49,13 @@ bool RetrospectiveSdkBridge::Startup(const char* lib_path, char* error_out, size
         !BindSymbol("retro_frame", reinterpret_cast<void**>(&retro_frame_), error_out, error_out_len) ||
         !BindSymbol("retro_on_map_start", reinterpret_cast<void**>(&retro_on_map_start_), error_out, error_out_len) ||
         !BindSymbol("retro_frame_count", reinterpret_cast<void**>(&retro_frame_count_), error_out, error_out_len) ||
+        !BindSymbol("retro_on_player_spawn", reinterpret_cast<void**>(&retro_on_player_spawn_), error_out, error_out_len) ||
+        !BindSymbol("retro_on_player_death", reinterpret_cast<void**>(&retro_on_player_death_), error_out, error_out_len) ||
+        !BindSymbol("retro_player_spawn_count", reinterpret_cast<void**>(&retro_player_spawn_count_), error_out, error_out_len) ||
+        !BindSymbol("retro_player_death_count", reinterpret_cast<void**>(&retro_player_death_count_), error_out, error_out_len) ||
+        !BindSymbol("retro_last_spawn_player_slot", reinterpret_cast<void**>(&retro_last_spawn_player_slot_), error_out, error_out_len) ||
+        !BindSymbol("retro_last_death_victim_slot", reinterpret_cast<void**>(&retro_last_death_victim_slot_), error_out, error_out_len) ||
+        !BindSymbol("retro_last_death_attacker_slot", reinterpret_cast<void**>(&retro_last_death_attacker_slot_), error_out, error_out_len) ||
         !BindSymbol("retro_status_text", reinterpret_cast<void**>(&retro_status_text_), error_out, error_out_len)) {
         Shutdown();
         return false;
@@ -70,7 +84,14 @@ void RetrospectiveSdkBridge::Shutdown() {
     retro_shutdown_ = NULL;
     retro_frame_ = NULL;
     retro_on_map_start_ = NULL;
+    retro_on_player_spawn_ = NULL;
+    retro_on_player_death_ = NULL;
     retro_frame_count_ = NULL;
+    retro_player_spawn_count_ = NULL;
+    retro_player_death_count_ = NULL;
+    retro_last_spawn_player_slot_ = NULL;
+    retro_last_death_victim_slot_ = NULL;
+    retro_last_death_attacker_slot_ = NULL;
     retro_status_text_ = NULL;
 
     if (module_ != NULL) {
@@ -97,11 +118,60 @@ int RetrospectiveSdkBridge::OnFrame(unsigned int dt_ms) const {
     return retro_frame_(dt_ms);
 }
 
+int RetrospectiveSdkBridge::OnPlayerSpawn(unsigned int player_slot) const {
+    if (!IsReady() || retro_on_player_spawn_ == NULL) {
+        return -1;
+    }
+    return retro_on_player_spawn_(player_slot);
+}
+
+int RetrospectiveSdkBridge::OnPlayerDeath(unsigned int victim_slot, unsigned int attacker_slot) const {
+    if (!IsReady() || retro_on_player_death_ == NULL) {
+        return -1;
+    }
+    return retro_on_player_death_(victim_slot, attacker_slot);
+}
+
 unsigned int RetrospectiveSdkBridge::FrameCount() const {
     if (!IsReady() || retro_frame_count_ == NULL) {
         return 0;
     }
     return retro_frame_count_();
+}
+
+unsigned int RetrospectiveSdkBridge::PlayerSpawnCount() const {
+    if (!IsReady() || retro_player_spawn_count_ == NULL) {
+        return 0;
+    }
+    return retro_player_spawn_count_();
+}
+
+unsigned int RetrospectiveSdkBridge::PlayerDeathCount() const {
+    if (!IsReady() || retro_player_death_count_ == NULL) {
+        return 0;
+    }
+    return retro_player_death_count_();
+}
+
+unsigned int RetrospectiveSdkBridge::LastSpawnPlayerSlot() const {
+    if (!IsReady() || retro_last_spawn_player_slot_ == NULL) {
+        return 0;
+    }
+    return retro_last_spawn_player_slot_();
+}
+
+unsigned int RetrospectiveSdkBridge::LastDeathVictimSlot() const {
+    if (!IsReady() || retro_last_death_victim_slot_ == NULL) {
+        return 0;
+    }
+    return retro_last_death_victim_slot_();
+}
+
+unsigned int RetrospectiveSdkBridge::LastDeathAttackerSlot() const {
+    if (!IsReady() || retro_last_death_attacker_slot_ == NULL) {
+        return 0;
+    }
+    return retro_last_death_attacker_slot_();
 }
 
 const char* RetrospectiveSdkBridge::StatusText(int code) const {
@@ -160,4 +230,3 @@ void RetrospectiveSdkBridge::WriteError(char* error_out, size_t error_out_len, c
     memcpy(error_out, message, copy_len);
     error_out[copy_len] = '\0';
 }
-

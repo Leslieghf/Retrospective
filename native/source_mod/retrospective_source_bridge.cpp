@@ -51,6 +51,20 @@ void RetrospectiveSourceBridge::on_game_frame(std::uint32_t dt_ms) {
     g_loader.frame(dt_ms);
 }
 
+void RetrospectiveSourceBridge::on_player_spawn(std::uint32_t player_slot) {
+    if (!g_started) {
+        return;
+    }
+    g_loader.on_player_spawn(player_slot);
+}
+
+void RetrospectiveSourceBridge::on_player_death(std::uint32_t victim_slot, std::uint32_t attacker_slot) {
+    if (!g_started) {
+        return;
+    }
+    g_loader.on_player_death(victim_slot, attacker_slot);
+}
+
 bool RetrospectiveSourceBridge::ready() const {
     return g_started && g_loader.is_loaded();
 }
@@ -59,3 +73,10 @@ std::uint32_t RetrospectiveSourceBridge::frame_count() const {
     return g_loader.frame_count();
 }
 
+std::uint32_t RetrospectiveSourceBridge::player_spawn_count() const {
+    return g_loader.player_spawn_count();
+}
+
+std::uint32_t RetrospectiveSourceBridge::player_death_count() const {
+    return g_loader.player_death_count();
+}
